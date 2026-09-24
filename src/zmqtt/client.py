@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, Protocol, overload
 
 from zmqtt._internal._compat import Self, defer_cancellation
+from zmqtt._internal.auth import AuthHandler
 from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.connect import ConnAck, Connect, Will
 from zmqtt._internal.packets.properties import (
@@ -447,6 +448,7 @@ class MQTTClient:
         client_id: str = "",
         keepalive: int = 60,
         clean_session: bool = True,
+        auth_handler: AuthHandler | None = None,
         username: str | None = None,
         password: str | None = None,
         will: Will | None = None,
@@ -528,6 +530,9 @@ class MQTTClient:
         if will is not None and will.properties is not None and version != "5.0":
             msg = "will properties require MQTT 5.0"
             raise RuntimeError(msg)
+        if auth_handler is not None and version != "5.0":
+            msg = "auth_handler require MQTT 5.0"
+            raise RuntimeError(msg)
         self._host = host
         self._port = port
         self._client_id = client_id
@@ -553,6 +558,7 @@ class MQTTClient:
         self._subscriptions: list[Subscription] = []
         self._run_task: asyncio.Task[None] | None = None
         self._subscription_failure: asyncio.Future[BaseException] | None = None
+        self._auth_handler: AuthHandler | None = auth_handler
 
     @property
     def connection_info(self) -> ConnectionInfo:
@@ -882,12 +888,19 @@ class MQTTClient:
             request_router=self._request_dispatcher,
             session_replay_buffer_size=self._session_replay_buffer_size,
             session_replay_timeout=self._session_replay_timeout,
+            auth_handler=self._auth_handler,
         )
         connect_props = None
         if self._version == "5.0":
             connect_props = ConnectProperties(
                 session_expiry_interval=self._session_expiry_interval,
             )
+            if self._auth_handler is not None:
+                connect_props = dataclasses.replace(
+                    connect_props,
+                    authentication_method=self._auth_handler.method,
+                    authentication_data=await self._auth_handler.initial_data(),
+                )
         connect_packet = Connect(
             client_id=self._client_id,
             clean_session=self._clean_session,

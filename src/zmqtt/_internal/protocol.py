@@ -8,13 +8,14 @@ from collections.abc import AsyncGenerator, Iterable
 from typing import Final, Literal
 
 from zmqtt._internal import topic_matching
+from zmqtt._internal.auth import AuthHandler
 from zmqtt._internal.inbound import InboundPublishFlow
 from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.codec import AnyPacket, encode
 from zmqtt._internal.packets.connect import ConnAck, Connect
 from zmqtt._internal.packets.disconnect import Disconnect
 from zmqtt._internal.packets.ping import PingReq, PingResp
-from zmqtt._internal.packets.properties import SubscribeProperties
+from zmqtt._internal.packets.properties import AuthProperties, SubscribeProperties
 from zmqtt._internal.packets.publish import PubAck, PubComp, Publish, PubRec, PubRel
 from zmqtt._internal.packets.reader import PacketBuffer
 from zmqtt._internal.packets.subscribe import (
@@ -177,6 +178,7 @@ class MQTTProtocol:
         request_router: RequestRouter | None = None,
         session_replay_buffer_size: int = 1000,
         session_replay_timeout: float = 30.0,
+        auth_handler: AuthHandler | None = None,
     ) -> None:
         self._transport = transport
         self._state = state
@@ -197,6 +199,7 @@ class MQTTProtocol:
         self._subscription_guards = _SubscriptionGuards()
         self._disconnecting = False
         self._dead = False
+        self._auth_handler: AuthHandler | None = auth_handler
         # MQTT 5 §3.2.2.3.4: absent Maximum QoS means the server accepts QoS 2,
         # and 3.1.1 has no CONNACK properties at all — default to EXACTLY_ONCE
         # so publish() never has to branch on None.
@@ -225,9 +228,26 @@ class MQTTProtocol:
             data = await self._transport.read(4096)
             self._buf.feed(data)
             for pkt in self._buf:
+                if isinstance(pkt, Auth):
+                    if pkt.reason_code != 0x18 or self._auth_handler is None:
+                        msg = f"Unexpected AUTH packet during CONNECT: {pkt!r}"
+                        raise MQTTProtocolError(msg)
+                    challenge_data = pkt.properties.authentication_data if pkt.properties is not None else None
+                    response_data = await self._auth_handler.continue_data(challenge_data)
+                    response = Auth(
+                        reason_code=0x18,
+                        properties=AuthProperties(
+                            authentication_method=self._auth_handler.method,
+                            authentication_data=response_data,
+                        ),
+                    )
+                    await self._send(self._encode(response))
+                    continue
+
                 if not isinstance(pkt, ConnAck):
                     msg = f"Expected CONNACK, got {pkt!r}"
                     raise MQTTProtocolError(msg)
+
                 if pkt.return_code != 0:
                     raise MQTTConnectError(pkt.return_code, properties=pkt.properties)
                 log.info("Connected with session_present=%s", pkt.session_present)
