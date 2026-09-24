@@ -225,6 +225,26 @@ async def test_reauthenticate_timeout_clears_pending() -> None:
     await _stop_task(read_task)
 
 
+async def test_reauthenticate_cancelled_clears_pending() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    read_task = await _run_read_loop(protocol)
+
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await asyncio.sleep(0)
+    reauth_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reauth_task
+
+    assert protocol._state.pending_auth is None
+
+    second = asyncio.create_task(protocol.reauthenticate())
+    await _answer_after(transport, sent=2, packet=Auth(reason_code=0x00))
+    await second
+
+    await _stop_task(read_task)
+
+
 async def test_auth_without_pending_exchange_raises() -> None:
     handler = FakeAuthHandler()
     protocol, transport = await _connected(handler)

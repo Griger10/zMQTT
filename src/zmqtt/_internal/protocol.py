@@ -595,10 +595,10 @@ class MQTTProtocol:
         try:
             await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
         except asyncio.TimeoutError as e:
-            self._state.pending_auth = None
             msg = "Re-authentication was not completed within timeout"
             raise MQTTTimeoutError(msg) from e
-        self._state.pending_auth = None
+        finally:
+            self._state.pending_auth = None
 
     async def _read_loop(self) -> None:
         while True:
