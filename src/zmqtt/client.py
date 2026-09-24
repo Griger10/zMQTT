@@ -12,10 +12,8 @@ from typing import Final, Literal, Protocol, overload
 
 from zmqtt._internal._compat import Self, defer_cancellation
 from zmqtt._internal.auth import AuthHandler
-from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.connect import ConnAck, Connect, Will
 from zmqtt._internal.packets.properties import (
-    AuthProperties,
     ConnAckProperties,
     ConnectProperties,
     PublishProperties,
@@ -37,6 +35,7 @@ from zmqtt._internal.types.topic import validate_publish, validate_response_topi
 from zmqtt.errors import MQTTConnectError, MQTTDisconnectedError, MQTTTimeoutError
 
 __all__ = (
+    "AuthHandler",
     "ConnectionInfo",
     "MQTTClient",
     "MQTTClientV5",
@@ -255,9 +254,9 @@ class MQTTClientV5(Protocol):
         subscription_identifier: int | None = None,
     ) -> "Subscription": ...
 
-    async def auth(self, method: str, data: bytes | None = None) -> None: ...
-
     async def ping(self, timeout: float = 10.0) -> float: ...
+
+    async def reauthenticate(self, data: bytes | None = None, *, timeout: float | None = None) -> None: ...
 
     async def request(
         self,
@@ -700,6 +699,34 @@ class MQTTClient:
             raise MQTTDisconnectedError(msg)
         return await self._protocol.ping(timeout=timeout)
 
+    async def reauthenticate(self, data: bytes | None = None, *, timeout: float | None = None) -> None:
+        """Client-initiated re-authentication (MQTT 5.0 only).
+
+        Reuses the authentication method negotiated by ``auth_handler``
+        during CONNECT and drives the challenge/response exchange through it.
+
+        Args:
+            data: Authentication data for the initial AUTH (reason code 0x19)
+                sent to the broker; interpretation is method-specific.
+            timeout: Seconds to wait for the exchange to complete before
+                raising MQTTTimeoutError. ``None`` waits indefinitely.
+
+        Raises:
+            RuntimeError: If the client is not using MQTT 5.0, or the
+                connection did not negotiate an authentication method at
+                CONNECT time (no ``auth_handler`` was configured).
+            MQTTDisconnectedError: If the client is not currently connected.
+            MQTTAuthError: If the broker rejects the re-authentication.
+            MQTTTimeoutError: If the exchange does not complete within timeout.
+        """
+        if self._version != "5.0":
+            msg = "AUTH is not allowed in MQTT 3.1.1"
+            raise RuntimeError(msg)
+        if self._protocol is None:
+            msg = "Not connected"
+            raise MQTTDisconnectedError(msg)
+        await self._protocol.reauthenticate(data=data, timeout=timeout)
+
     def subscribe(
         self,
         *filters: str,
@@ -854,27 +881,6 @@ class MQTTClient:
             return await asyncio.wait_for(pending.future, timeout=timeout)
         finally:
             await pending.close()
-
-    async def auth(self, method: str, data: bytes | None = None) -> None:
-        """Send an AUTH packet for enhanced authentication (MQTT 5.0 only).
-
-        Args:
-            method: Authentication method name negotiated with the broker.
-            data: Optional authentication data to include in the packet.
-
-        Raises:
-            RuntimeError: If the client is not using MQTT 5.0.
-            MQTTDisconnectedError: If the client is not currently connected.
-        """
-        if self._version != "5.0":
-            msg = "AUTH requires MQTT 5.0"
-            raise RuntimeError(msg)
-        if self._protocol is None:
-            msg = "Not connected"
-            raise MQTTDisconnectedError(msg)
-
-        props = AuthProperties(authentication_method=method, authentication_data=data)
-        await self._protocol.send_auth(Auth(reason_code=0x18, properties=props))
 
     async def _connect(self) -> None:
         transport = await self._transport_factory(self._host, self._port, self._tls)
