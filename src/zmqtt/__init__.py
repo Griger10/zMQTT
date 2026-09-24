@@ -22,6 +22,7 @@ from zmqtt.client import (
     create_client,
 )
 from zmqtt.errors import (
+    MQTTAuthError,
     MQTTConnectError,
     MQTTDisconnectedError,
     MQTTError,
@@ -31,7 +32,6 @@ from zmqtt.errors import (
     MQTTQoSExceededError,
     MQTTSubscribeError,
     MQTTTimeoutError,
-    MQTTAuthError,
 )
 
 __all__ = (
@@ -39,6 +39,7 @@ __all__ = (
     "ConnAckProperties",
     "ConnectProperties",
     "ConnectionInfo",
+    "MQTTAuthError",
     "MQTTClient",
     "MQTTClientV5",
     "MQTTClientV311",
@@ -51,7 +52,6 @@ __all__ = (
     "MQTTQoSExceededError",
     "MQTTSubscribeError",
     "MQTTTimeoutError",
-    "MQTTAuthError",
     "Message",
     "PublishProperties",
     "QoS",
