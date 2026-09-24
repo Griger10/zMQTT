@@ -12,6 +12,7 @@ from typing import Literal
 
 import pytest
 
+from zmqtt._internal.auth import AuthHandler
 from zmqtt._internal.packets.codec import AnyPacket, encode
 from zmqtt._internal.packets.connect import ConnAck, Connect
 from zmqtt._internal.packets.disconnect import Disconnect
@@ -103,6 +104,7 @@ def make_protocol(
     ping_timeout: float = 5.0,
     stripped_prefixes: tuple[str, ...] = _DEFAULT_STRIPPED_PREFIXES,
     version: Literal["3.1.1", "5.0"] = "3.1.1",
+    auth_handler: AuthHandler | None = None,
 ) -> tuple[MQTTProtocol, FakeTransport]:
     transport = FakeTransport()
     state = SessionState()
@@ -113,6 +115,7 @@ def make_protocol(
         ping_timeout=ping_timeout,
         stripped_prefixes=stripped_prefixes,
         version=version,
+        auth_handler=auth_handler,
     )
     return protocol, transport
 
