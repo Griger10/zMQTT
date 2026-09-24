@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import Enum
 
+from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.publish import PubAck, PubComp, Publish
 from zmqtt._internal.packets.subscribe import SubAck, UnsubAck
 from zmqtt._internal.routing import InboundRecipient
@@ -82,6 +83,7 @@ class SessionState:
         # pending protocol acks keyed by packet_id
         self.pending_subs: dict[int, asyncio.Future[SubAck]] = {}
         self.pending_unsubs: dict[int, asyncio.Future[UnsubAck]] = {}
+        self.pending_auth: asyncio.Future[Auth] | None = None
 
     def clear(self) -> None:
         """Reset all state; called on clean-session connect."""
@@ -94,3 +96,4 @@ class SessionState:
         self.pending_subs.clear()
         self.pending_unsubs.clear()
         self.auth_method = None
+        self.pending_auth = None
