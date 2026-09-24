@@ -76,6 +76,8 @@ class SessionState:
         # QoS 2 inbound: packet_ids received but not yet acked (PUBREC not sent)
         self.pending_ack_qos2_in: set[int] = set()
         self.subscriptions = SubscriptionIndex()
+        # Authentication method name
+        self.auth_method: str | None = None
         # topic filter → subscription entry; registered before SUBSCRIBE is sent
         # pending protocol acks keyed by packet_id
         self.pending_subs: dict[int, asyncio.Future[SubAck]] = {}
@@ -91,3 +93,4 @@ class SessionState:
         self.subscriptions.clear()
         self.pending_subs.clear()
         self.pending_unsubs.clear()
+        self.auth_method = None
