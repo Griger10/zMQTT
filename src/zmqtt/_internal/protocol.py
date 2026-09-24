@@ -562,16 +562,6 @@ class MQTTProtocol:
             raise MQTTTimeoutError(msg) from e
         return loop.time() - t0
 
-    async def send_auth(self, packet: Auth) -> None:
-        """Send an AUTH packet (MQTT 5.0 enhanced authentication)."""
-        if self._version != "5.0":
-            msg = f"Feature is not supported for mqtt protocol version {self._version}"
-            raise RuntimeError(
-                msg,
-            )
-        await self._send(self._encode(packet))
-        log.debug("Sent AUTH with reason_code=%d", packet.reason_code)
-
     async def reauthenticate(self, data: bytes | None = None, *, timeout: float | None = None) -> None:
         """Client-initiated re-authentication (MQTT 5.0, reason code 0x19).
 
