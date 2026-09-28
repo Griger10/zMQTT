@@ -405,3 +405,10 @@ async def test_client_reauthenticate_on_v311_raises() -> None:
 
     with pytest.raises(RuntimeError, match=r"AUTH is not allowed in MQTT 3\.1\.1"):
         await client.reauthenticate()
+
+
+async def test_client_auth_emits_deprecation_warning() -> None:
+    client = MQTTClient("localhost", version="5.0")
+
+    with pytest.warns(DeprecationWarning, match=r"auth\(\) is deprecated"), pytest.raises(MQTTDisconnectedError):
+        await client.auth("TEST", b"data")
