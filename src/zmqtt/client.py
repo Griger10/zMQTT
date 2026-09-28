@@ -6,14 +6,17 @@ import dataclasses
 import logging
 import os
 import ssl
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, overload
 
 from zmqtt._internal._compat import Self, defer_cancellation, wait_for
 from zmqtt._internal.auth import AuthHandler
+from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.connect import ConnAck, Connect, Will
 from zmqtt._internal.packets.properties import (
+    AuthProperties,
     ConnAckProperties,
     ConnectProperties,
     PublishProperties,
@@ -329,6 +332,8 @@ class MQTTClientV5(Protocol):
         retain_handling: RetainHandling = RetainHandling.SEND_ON_SUBSCRIBE,
         subscription_identifier: int | None = None,
     ) -> "Subscription": ...
+
+    async def auth(self, method: str, data: bytes | None = None) -> None: ...
 
     async def ping(self, timeout: float = 10.0) -> float: ...
 
@@ -1037,6 +1042,31 @@ class MQTTClient:
             return await wait_for(pending.future, timeout=timeout)
         finally:
             await pending.close()
+
+    async def auth(self, method: str, data: bytes | None = None) -> None:
+        """Send an AUTH packet for enhanced authentication (MQTT 5.0 only).
+
+        Args:
+            method: Authentication method name negotiated with the broker.
+            data: Optional authentication data to include in the packet.
+
+        Raises:
+            RuntimeError: If the client is not using MQTT 5.0.
+            MQTTDisconnectedError: If the client is not currently connected.
+        """
+        warnings.warn(
+            "MQTTClient.auth() is deprecated: pass auth_handler to the client and use reauthenticate().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self._version != "5.0":
+            msg = "AUTH requires MQTT 5.0"
+            raise RuntimeError(msg)
+        if self._protocol is None:
+            msg = "Not connected"
+            raise MQTTDisconnectedError(msg)
+        props = AuthProperties(authentication_method=method, authentication_data=data)
+        await self._protocol.send_auth(Auth(reason_code=0x18, properties=props))
 
     async def _connect(self) -> None:
         transport = await self._transport_factory(self._host, self._port, self._tls)
