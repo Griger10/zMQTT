@@ -1085,22 +1085,30 @@ class MQTTClient:
             maximum_packet_size=connect_props.maximum_packet_size if connect_props is not None else None,
             auth_handler=self._auth_handler,
         )
-        if self._auth_handler is not None and connect_props is not None:
-            connect_props = dataclasses.replace(
-                connect_props,
-                authentication_method=self._auth_handler.method,
-                authentication_data=await self._auth_handler.initial_data(),
-            )
-        connect_packet = Connect(
-            client_id=self._client_id,
-            clean_session=self._clean_session,
-            keepalive=self._keepalive,
-            username=self._username,
-            password=self._password.encode() if self._password is not None else None,
-            will=self._will,
-            properties=connect_props,
-        )
         try:
+            if self._auth_handler is not None and connect_props is not None:
+                try:
+                    initial_data = await wait_for(
+                        self._auth_handler.initial_data(),
+                        timeout=self._mqtt_connect_timeout,
+                    )
+                except asyncio.TimeoutError as e:
+                    msg = "AuthHandler.initial_data() did not complete within mqtt_connect_timeout"
+                    raise MQTTTimeoutError(msg) from e
+                connect_props = dataclasses.replace(
+                    connect_props,
+                    authentication_method=self._auth_handler.method,
+                    authentication_data=initial_data,
+                )
+            connect_packet = Connect(
+                client_id=self._client_id,
+                clean_session=self._clean_session,
+                keepalive=self._keepalive,
+                username=self._username,
+                password=self._password.encode() if self._password is not None else None,
+                will=self._will,
+                properties=connect_props,
+            )
             connack = await protocol.connect(connect_packet)
         except BaseException:
             await transport.close()
