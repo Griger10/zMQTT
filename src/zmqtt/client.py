@@ -1244,6 +1244,7 @@ def create_client(
     host: str,
     port: int = ...,
     *,
+    auth_handler: AuthHandler | None = ...,
     client_id: str = ...,
     keepalive: int = ...,
     clean_session: bool = ...,
@@ -1272,6 +1273,7 @@ def create_client(
     host: str,
     port: int = 1883,
     *,
+    auth_handler: AuthHandler | None = None,
     client_id: str = "",
     keepalive: int = 60,
     clean_session: bool = True,
@@ -1304,6 +1306,7 @@ def create_client(
     return MQTTClient(
         host,
         port,
+        auth_handler=auth_handler,
         client_id=client_id,
         keepalive=keepalive,
         clean_session=clean_session,
