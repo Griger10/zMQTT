@@ -245,6 +245,73 @@ async def test_reauthenticate_cancelled_clears_pending() -> None:
     await _stop_task(read_task)
 
 
+def _block_writes(transport: FakeTransport) -> asyncio.Event:
+    """Make ``transport.write`` hang until the returned event is set (a stalled send)."""
+    release = asyncio.Event()
+
+    async def write(data: bytes) -> None:
+        await release.wait()
+        transport.sent.append(data)
+
+    transport.write = write  # type: ignore[method-assign]
+    return release
+
+
+async def test_reauthenticate_cancelled_during_send_clears_pending() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    read_task = await _run_read_loop(protocol)
+    _block_writes(transport)
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await asyncio.sleep(0)
+
+    reauth_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reauth_task
+
+    assert protocol._state.pending_auth is None
+
+    await _stop_task(read_task)
+
+
+async def test_reauthenticate_after_cancel_during_send_starts_new_exchange() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    read_task = await _run_read_loop(protocol)
+    release = _block_writes(transport)
+    cancelled = asyncio.create_task(protocol.reauthenticate())
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    release.set()
+
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await _answer_after(transport, sent=1, packet=Auth(reason_code=0x00))
+    await reauth_task
+
+    assert len(transport.sent) == 1
+    sent = _decode(transport.sent[0])
+    assert isinstance(sent, Auth)
+    assert sent.reason_code == 0x19
+
+    await _stop_task(read_task)
+
+
+async def test_reauthenticate_timeout_covers_stalled_send() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    read_task = await _run_read_loop(protocol)
+    _block_writes(transport)
+
+    with pytest.raises(MQTTTimeoutError):
+        await asyncio.wait_for(protocol.reauthenticate(timeout=0.05), timeout=1)
+
+    assert protocol._state.pending_auth is None
+
+    await _stop_task(read_task)
+
+
 async def test_auth_without_pending_exchange_raises() -> None:
     handler = FakeAuthHandler()
     protocol, transport = await _connected(handler)
