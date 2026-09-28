@@ -1,7 +1,6 @@
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 
-@runtime_checkable
 class AuthHandler(Protocol):
     method: str
 
