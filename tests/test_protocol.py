@@ -12,6 +12,7 @@ from typing import Literal
 
 import pytest
 
+from zmqtt import MQTTClient
 from zmqtt._internal.auth import AuthHandler
 from zmqtt._internal.packets.codec import AnyPacket, encode
 from zmqtt._internal.packets.connect import ConnAck, Connect
@@ -623,6 +624,55 @@ async def test_inbound_qos2_manual_ack_duplicate_ignored() -> None:
     assert queue.empty()
 
     await _stop_task(read_task)
+
+
+@pytest.mark.parametrize("qos", [QoS.AT_LEAST_ONCE, QoS.EXACTLY_ONCE])
+@pytest.mark.parametrize("auto_ack", [False, True])
+async def test_detached_subscription_does_not_ack_new_publish(qos: QoS, auto_ack: bool) -> None:
+    protocol, transport = make_protocol()
+    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="3.1.1"))
+    await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+    entry = SubscriptionEntry(queue=asyncio.Queue(), actual_filter="t/#", auto_ack=auto_ack)
+    protocol._state.subscriptions.add("t/#", entry)
+    protocol.detach(["t/#"])
+    transport.sent.clear()
+
+    await protocol._handle_publish(
+        Publish(topic="t/x", payload=b"unprocessed", qos=qos, retain=False, dup=False, packet_id=1),
+    )
+
+    assert entry.queue.empty()
+    assert transport.sent == []
+    assert protocol._state.subscriptions.contains("t/#")
+
+
+@pytest.mark.parametrize("qos", [QoS.AT_LEAST_ONCE, QoS.EXACTLY_ONCE])
+async def test_detach_unblocks_full_subscription_queue_without_ack(qos: QoS) -> None:
+    protocol, transport = make_protocol()
+    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="3.1.1"))
+    await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+    transport.sent.clear()
+    client = MQTTClient("localhost")
+    client._protocol = protocol
+    subscription = client.subscribe("t/#", qos=qos, auto_ack=False, receive_buffer_size=1)
+    client._subscriptions.append(subscription)
+    subscription._registered_filters = ["t/#"]
+    entry = SubscriptionEntry(queue=subscription._queue, actual_filter="t/#", auto_ack=False)
+    protocol._state.subscriptions.add("t/#", entry)
+
+    def publish(packet_id: int) -> Publish:
+        return Publish(topic="t/x", payload=b"unprocessed", qos=qos, retain=False, dup=False, packet_id=packet_id)
+
+    await protocol._handle_publish(publish(1))
+    blocked_delivery = asyncio.create_task(protocol._handle_publish(publish(2)))
+    await asyncio.sleep(0)
+    assert not blocked_delivery.done()
+
+    await subscription.detach()
+    await asyncio.wait_for(blocked_delivery, timeout=1.0)
+
+    assert entry.queue.empty()
+    assert transport.sent == []
 
 
 @pytest.mark.parametrize("reason_code", PUBLISH_FAILURE_CODES)
