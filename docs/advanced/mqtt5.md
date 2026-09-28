@@ -193,7 +193,37 @@ zmqtt manages the reply topic subscription, the `response_topic` /
 cancellation automatically. See [Request / Response](request-response.md)
 for the full API and responder example.
 
-## Low-level AUTH packet (`client.auth()`)
+## Enhanced authentication (`auth_handler`)
+
+Pass an `AuthHandler` to negotiate an authentication method in CONNECT and
+answer the broker's AUTH challenges automatically:
+
+```python
+class ScramHandler:
+    method = "SCRAM-SHA-256"
+
+    async def initial_data(self) -> bytes | None:
+        return b"client-first-message"
+
+    async def continue_data(self, data: bytes | None) -> bytes | None:
+        return b"client-final-message"
+
+client = create_client("localhost", version="5.0", auth_handler=ScramHandler())
+```
+
+After connecting, `await client.reauthenticate()` starts re-authentication
+(AUTH with reason code `0x19`) and returns once the broker confirms it.
+`auth_handler` requires `version="5.0"`.
+
+The broker's CONNACK and AUTH packets must carry the same authentication method
+as the one sent in CONNECT. If the method differs or is missing, zmqtt treats it
+as a protocol error (`MQTTProtocolError`) and drops the connection.
+
+## Low-level AUTH packet (`client.auth()`, deprecated)
+
+!!! warning "Deprecated"
+    `client.auth()` is deprecated and emits a `DeprecationWarning`. Pass an
+    `auth_handler` to the client and use `reauthenticate()` instead.
 
 Send one MQTT 5 AUTH packet with reason code `0x18` (Continue Authentication):
 
@@ -206,6 +236,11 @@ The `method` string is sent as `authentication_method`, and `data` as
 negotiate the method in CONNECT, wait for a broker AUTH response, or implement a
 multi-step mechanism such as SCRAM. Treat it as a low-level building block, not
 a complete enhanced-authentication flow.
+
+!!! note
+    The method must match the one negotiated in CONNECT (via `auth_handler`);
+    the spec forbids AUTH otherwise. To start re-authentication use
+    `reauthenticate()`, since `auth()` always sends `0x18`.
 
 ## CONNACK and DISCONNECT reason codes
 
