@@ -630,19 +630,23 @@ class MQTTProtocol:
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Auth] = loop.create_future()
-        self._state.pending_auth = future
-        await self.send_packet(
-            Auth(
-                reason_code=0x19,
-                properties=AuthProperties(
-                    authentication_method=self._state.auth_method,
-                    authentication_data=data,
+
+        async def exchange() -> None:
+            await self.send_packet(
+                Auth(
+                    reason_code=0x19,
+                    properties=AuthProperties(
+                        authentication_method=self._state.auth_method,
+                        authentication_data=data,
+                    ),
                 ),
-            ),
-        )
-        log.debug("Sent AUTH with reason_code=0x19 (re-authenticate)")
+            )
+            log.debug("Sent AUTH with reason_code=0x19 (re-authenticate)")
+            await future
+
+        self._state.pending_auth = future
         try:
-            await wait_for(asyncio.shield(future), timeout=timeout)
+            await wait_for(exchange(), timeout=timeout)
         except asyncio.TimeoutError as e:
             msg = "Re-authentication was not completed within timeout"
             raise MQTTTimeoutError(msg) from e
