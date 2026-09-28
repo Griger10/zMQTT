@@ -16,7 +16,7 @@ from zmqtt._internal.packets.codec import AnyPacket, PacketTooLargeError, encode
 from zmqtt._internal.packets.connect import ConnAck, Connect
 from zmqtt._internal.packets.disconnect import Disconnect
 from zmqtt._internal.packets.ping import PingReq, PingResp
-from zmqtt._internal.packets.properties import AuthProperties, SubscribeProperties
+from zmqtt._internal.packets.properties import AuthProperties, ConnAckProperties, SubscribeProperties
 from zmqtt._internal.packets.publish import PubAck, PubComp, Publish, PubRec, PubRel
 from zmqtt._internal.packets.reader import PacketBuffer
 from zmqtt._internal.packets.subscribe import (
@@ -242,6 +242,7 @@ class MQTTProtocol:
                         if pkt.reason_code != 0x18 or self._auth_handler is None:
                             msg = f"Unexpected AUTH packet during CONNECT: {pkt!r}"
                             raise MQTTProtocolError(msg)
+                        self._require_auth_method(pkt.properties)
                         challenge_data = pkt.properties.authentication_data if pkt.properties is not None else None
                         response_data = await self._auth_handler.continue_data(challenge_data)
                         response = Auth(
@@ -259,6 +260,8 @@ class MQTTProtocol:
                         raise MQTTProtocolError(msg)
                     if pkt.return_code != 0:
                         raise MQTTConnectError(pkt.return_code, properties=pkt.properties)
+                    if self._auth_handler is not None:
+                        self._require_auth_method(pkt.properties)
                     log.info("Connected with session_present=%s", pkt.session_present)
                     if self._version == "5.0" and pkt.properties is not None:
                         # Properties present but Maximum QoS absent: spec default is QoS 2.
@@ -781,6 +784,14 @@ class MQTTProtocol:
             )
         future.set_result(packet)
 
+    def _require_auth_method(self, properties: AuthProperties | ConnAckProperties | None) -> None:
+        """Reject a packet whose Authentication Method differs from the one sent in CONNECT (MQTT 5.0 §4.12)."""
+        expected = self._auth_handler.method if self._auth_handler is not None else None
+        received = properties.authentication_method if properties is not None else None
+        if received != expected:
+            msg = f"Authentication Method mismatch: expected {expected!r}, got {received!r}"
+            raise MQTTProtocolError(msg)
+
     async def _handle_auth(self, packet: Auth) -> None:
         if self._version != "5.0":
             msg = "Received AUTH packet in MQTT 3.1.1 session"
@@ -793,6 +804,7 @@ class MQTTProtocol:
             msg = f"Unexpected AUTH packet: {packet!r}"
             raise MQTTProtocolError(msg)
 
+        self._require_auth_method(packet.properties)
         challenge_data = packet.properties.authentication_data if packet.properties is not None else None
 
         if packet.reason_code == 0x18:
