@@ -8,7 +8,12 @@ from zmqtt._internal.packets.auth import Auth
 from zmqtt._internal.packets.codec import AnyPacket, encode
 from zmqtt._internal.packets.connect import ConnAck, Connect
 from zmqtt._internal.packets.disconnect import Disconnect
-from zmqtt._internal.packets.properties import AuthProperties, ConnectProperties, DisconnectProperties
+from zmqtt._internal.packets.properties import (
+    AuthProperties,
+    ConnAckProperties,
+    ConnectProperties,
+    DisconnectProperties,
+)
 from zmqtt._internal.packets.reader import PacketBuffer
 from zmqtt._internal.protocol import MQTTProtocol
 from zmqtt._internal.transport.base import Transport
@@ -39,6 +44,22 @@ class FakeAuthHandler:
         return self._responses.popleft()
 
 
+def _connack(method: str | None = "TEST") -> bytes:
+    props = ConnAckProperties(authentication_method=method) if method is not None else None
+    return encode(ConnAck(session_present=False, return_code=0, properties=props), version="5.0")
+
+
+def _auth_packet(reason_code: int, data: bytes | None = None, method: str | None = "TEST") -> Auth:
+    return Auth(
+        reason_code=reason_code,
+        properties=AuthProperties(authentication_method=method, authentication_data=data),
+    )
+
+
+def _auth(reason_code: int, data: bytes | None = None, method: str | None = "TEST") -> bytes:
+    return encode(_auth_packet(reason_code, data, method), version="5.0")
+
+
 def _decode(data: bytes) -> AnyPacket:
     buf = PacketBuffer(version="5.0")
     buf.feed(data)
@@ -48,7 +69,7 @@ def _decode(data: bytes) -> AnyPacket:
 
 async def _connected(handler: FakeAuthHandler | None = None) -> tuple[MQTTProtocol, FakeTransport]:
     protocol, transport = make_protocol(version="5.0", auth_handler=handler)
-    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="5.0"))
+    transport.feed(_connack(handler.method if handler is not None else None))
     await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
     transport.sent.clear()
     return protocol, transport
@@ -57,13 +78,8 @@ async def _connected(handler: FakeAuthHandler | None = None) -> tuple[MQTTProtoc
 async def test_connect_single_challenge_round_completes() -> None:
     handler = FakeAuthHandler(method="TEST", responses=[b"resp1"])
     protocol, transport = make_protocol(version="5.0", auth_handler=handler)
-    transport.feed(
-        encode(
-            Auth(reason_code=0x18, properties=AuthProperties(authentication_data=b"challenge1")),
-            version="5.0",
-        ),
-    )
-    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="5.0"))
+    transport.feed(_auth(0x18, b"challenge1"))
+    transport.feed(_connack())
 
     ack = await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
@@ -80,13 +96,9 @@ async def test_connect_single_challenge_round_completes() -> None:
 async def test_connect_multiple_challenge_rounds_completes() -> None:
     handler = FakeAuthHandler(responses=[b"resp1", b"resp2"])
     protocol, transport = make_protocol(version="5.0", auth_handler=handler)
-    transport.feed(
-        encode(Auth(reason_code=0x18, properties=AuthProperties(authentication_data=b"c1")), version="5.0"),
-    )
-    transport.feed(
-        encode(Auth(reason_code=0x18, properties=AuthProperties(authentication_data=b"c2")), version="5.0"),
-    )
-    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="5.0"))
+    transport.feed(_auth(0x18, b"c1"))
+    transport.feed(_auth(0x18, b"c2"))
+    transport.feed(_connack())
 
     ack = await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
@@ -115,9 +127,7 @@ async def test_connect_auth_without_handler_raises() -> None:
 async def test_connect_refused_after_auth_exchange_raises() -> None:
     handler = FakeAuthHandler(responses=[b"resp1"])
     protocol, transport = make_protocol(version="5.0", auth_handler=handler)
-    transport.feed(
-        encode(Auth(reason_code=0x18, properties=AuthProperties(authentication_data=b"c1")), version="5.0"),
-    )
+    transport.feed(_auth(0x18, b"c1"))
     transport.feed(encode(ConnAck(session_present=False, return_code=0x87), version="5.0"))
 
     with pytest.raises(MQTTConnectError) as exc_info:
@@ -129,7 +139,7 @@ async def test_connect_refused_after_auth_exchange_raises() -> None:
 async def test_successful_connect_stores_negotiated_auth_method() -> None:
     handler = FakeAuthHandler(method="SCRAM-SHA-256")
     protocol, transport = make_protocol(version="5.0", auth_handler=handler)
-    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="5.0"))
+    transport.feed(_connack("SCRAM-SHA-256"))
 
     await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
@@ -138,11 +148,56 @@ async def test_successful_connect_stores_negotiated_auth_method() -> None:
 
 async def test_connect_without_handler_leaves_auth_method_unset() -> None:
     protocol, transport = make_protocol(version="5.0")
-    transport.feed(encode(ConnAck(session_present=False, return_code=0), version="5.0"))
+    transport.feed(_connack(None))
 
     await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
     assert protocol._state.auth_method is None
+
+
+@pytest.mark.parametrize("method", [None, "WRONG"])
+async def test_connect_success_with_wrong_auth_method_raises(method: str | None) -> None:
+    handler = FakeAuthHandler(method="TEST")
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_connack(method))
+
+    with pytest.raises(MQTTProtocolError, match="Authentication Method"):
+        await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert protocol._state.auth_method is None
+
+
+@pytest.mark.parametrize("method", [None, "WRONG"])
+async def test_connect_challenge_with_wrong_auth_method_raises(method: str | None) -> None:
+    handler = FakeAuthHandler(method="TEST", responses=[b"resp1"])
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_auth(0x18, b"challenge1", method))
+
+    with pytest.raises(MQTTProtocolError, match="Authentication Method"):
+        await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert handler.continue_calls == []
+
+
+@pytest.mark.parametrize("reason_code", [0x00, 0x18])
+@pytest.mark.parametrize("method", [None, "WRONG"])
+async def test_reauthenticate_response_with_wrong_auth_method_fails_exchange(
+    reason_code: int,
+    method: str | None,
+) -> None:
+    handler = FakeAuthHandler(method="TEST", responses=[b"resp1"])
+    protocol, transport = await _connected(handler)
+    run_task = asyncio.create_task(protocol.run())
+    await protocol.started_event.wait()
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+
+    await _answer_after(transport, sent=1, packet=_auth_packet(reason_code, b"data", method))
+
+    with pytest.raises(MQTTProtocolError, match="Authentication Method"):
+        await run_task
+    with pytest.raises(MQTTDisconnectedError):
+        await reauth_task
+    assert handler.continue_calls == []
 
 
 async def test_reauthenticate_direct_success() -> None:
@@ -151,7 +206,7 @@ async def test_reauthenticate_direct_success() -> None:
     read_task = await _run_read_loop(protocol)
 
     reauth_task = asyncio.create_task(protocol.reauthenticate(b"start"))
-    await _answer_after(transport, sent=1, packet=Auth(reason_code=0x00))
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x00))
     await reauth_task
 
     assert protocol._state.pending_auth is None
@@ -174,9 +229,9 @@ async def test_reauthenticate_with_challenge_round() -> None:
     await _answer_after(
         transport,
         sent=1,
-        packet=Auth(reason_code=0x18, properties=AuthProperties(authentication_data=b"challenge")),
+        packet=_auth_packet(0x18, b"challenge"),
     )
-    await _answer_after(transport, sent=2, packet=Auth(reason_code=0x00))
+    await _answer_after(transport, sent=2, packet=_auth_packet(0x00))
     await reauth_task
 
     assert handler.continue_calls == [b"challenge"]
@@ -207,7 +262,7 @@ async def test_reauthenticate_concurrent_call_raises() -> None:
     with pytest.raises(RuntimeError):
         await protocol.reauthenticate()
 
-    await _answer_after(transport, sent=1, packet=Auth(reason_code=0x00))
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x00))
     await first
     await _stop_task(read_task)
 
@@ -239,7 +294,7 @@ async def test_reauthenticate_cancelled_clears_pending() -> None:
     assert protocol._state.pending_auth is None
 
     second = asyncio.create_task(protocol.reauthenticate())
-    await _answer_after(transport, sent=2, packet=Auth(reason_code=0x00))
+    await _answer_after(transport, sent=2, packet=_auth_packet(0x00))
     await second
 
     await _stop_task(read_task)
@@ -287,7 +342,7 @@ async def test_reauthenticate_after_cancel_during_send_starts_new_exchange() -> 
     release.set()
 
     reauth_task = asyncio.create_task(protocol.reauthenticate())
-    await _answer_after(transport, sent=1, packet=Auth(reason_code=0x00))
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x00))
     await reauth_task
 
     assert len(transport.sent) == 1
@@ -336,7 +391,7 @@ async def test_auth_unexpected_reason_code_during_reauth_fails_pending() -> None
     await protocol.started_event.wait()
 
     reauth_task = asyncio.create_task(protocol.reauthenticate())
-    await _answer_after(transport, sent=1, packet=Auth(reason_code=0x80))
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x80))
 
     with pytest.raises(MQTTProtocolError):
         await run_task
@@ -415,7 +470,7 @@ def test_client_v311_rejects_auth_handler() -> None:
 
 async def test_client_connect_embeds_negotiated_method_and_initial_data() -> None:
     handler = FakeAuthHandler(method="TEST", responses=[b"init"])
-    connack = encode(ConnAck(session_present=False, return_code=0), version="5.0")
+    connack = _connack()
     transport = _ClientFakeTransport(feed=connack)
 
     async def factory(host: str, port: int, tls: object) -> Transport:  # noqa: ARG001
@@ -436,7 +491,7 @@ async def test_client_connect_embeds_negotiated_method_and_initial_data() -> Non
 
 async def test_client_reconnect_calls_initial_data_again() -> None:
     handler = FakeAuthHandler(method="TEST", responses=[b"first", b"second"])
-    connack = encode(ConnAck(session_present=False, return_code=0), version="5.0")
+    connack = _connack()
     transports = [_ClientFakeTransport(feed=connack), _ClientFakeTransport(feed=connack)]
     made: list[_ClientFakeTransport] = []
 
@@ -479,3 +534,56 @@ async def test_client_auth_emits_deprecation_warning() -> None:
 
     with pytest.warns(DeprecationWarning, match=r"auth\(\) is deprecated"), pytest.raises(MQTTDisconnectedError):
         await client.auth("TEST", b"data")
+
+
+class _RaisingInitialDataHandler(FakeAuthHandler):
+    async def initial_data(self) -> bytes | None:
+        msg = "cannot build initial data"
+        raise ValueError(msg)
+
+
+class _HangingInitialDataHandler(FakeAuthHandler):
+    async def initial_data(self) -> bytes | None:
+        await asyncio.Event().wait()
+        return None
+
+
+async def test_client_connect_closes_transport_when_initial_data_raises() -> None:
+    transport = _ClientFakeTransport()
+
+    async def factory(host: str, port: int, tls: object) -> Transport:  # noqa: ARG001
+        return transport
+
+    client = MQTTClient(
+        "localhost",
+        version="5.0",
+        auth_handler=_RaisingInitialDataHandler(),
+        transport_factory=factory,
+    )
+
+    with pytest.raises(ValueError, match="cannot build initial data"):
+        await client._connect()
+
+    assert transport.closed
+    assert transport.sent == []
+
+
+async def test_client_connect_initial_data_is_bounded_by_connect_timeout() -> None:
+    transport = _ClientFakeTransport()
+
+    async def factory(host: str, port: int, tls: object) -> Transport:  # noqa: ARG001
+        return transport
+
+    client = MQTTClient(
+        "localhost",
+        version="5.0",
+        auth_handler=_HangingInitialDataHandler(),
+        mqtt_connect_timeout=0.05,
+        transport_factory=factory,
+    )
+
+    with pytest.raises(MQTTTimeoutError):
+        await asyncio.wait_for(client._connect(), timeout=1)
+
+    assert transport.closed
+    assert transport.sent == []
