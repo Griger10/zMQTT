@@ -267,20 +267,21 @@ async def test_reauthenticate_concurrent_call_raises() -> None:
     await _stop_task(read_task)
 
 
-async def test_reauthenticate_timeout_clears_pending() -> None:
+async def test_reauthenticate_timeout_aborts_connection() -> None:
     handler = FakeAuthHandler()
-    protocol, _transport = await _connected(handler)
+    protocol, transport = await _connected(handler)
     read_task = await _run_read_loop(protocol)
 
     with pytest.raises(MQTTTimeoutError):
         await protocol.reauthenticate(timeout=0.05)
 
     assert protocol._state.pending_auth is None
+    assert not transport.is_connected
 
     await _stop_task(read_task)
 
 
-async def test_reauthenticate_cancelled_clears_pending() -> None:
+async def test_reauthenticate_cancelled_aborts_connection() -> None:
     handler = FakeAuthHandler()
     protocol, transport = await _connected(handler)
     read_task = await _run_read_loop(protocol)
@@ -292,10 +293,12 @@ async def test_reauthenticate_cancelled_clears_pending() -> None:
         await reauth_task
 
     assert protocol._state.pending_auth is None
+    assert not transport.is_connected
+    sent_before = len(transport.sent)
 
-    second = asyncio.create_task(protocol.reauthenticate())
-    await _answer_after(transport, sent=2, packet=_auth_packet(0x00))
-    await second
+    with pytest.raises(MQTTDisconnectedError):
+        await protocol.reauthenticate()
+    assert len(transport.sent) == sent_before
 
     await _stop_task(read_task)
 
@@ -312,7 +315,7 @@ def _block_writes(transport: FakeTransport) -> asyncio.Event:
     return release
 
 
-async def test_reauthenticate_cancelled_during_send_clears_pending() -> None:
+async def test_reauthenticate_cancelled_during_send_aborts_connection() -> None:
     handler = FakeAuthHandler()
     protocol, transport = await _connected(handler)
     read_task = await _run_read_loop(protocol)
@@ -325,30 +328,10 @@ async def test_reauthenticate_cancelled_during_send_clears_pending() -> None:
         await reauth_task
 
     assert protocol._state.pending_auth is None
+    assert not transport.is_connected
 
-    await _stop_task(read_task)
-
-
-async def test_reauthenticate_after_cancel_during_send_starts_new_exchange() -> None:
-    handler = FakeAuthHandler()
-    protocol, transport = await _connected(handler)
-    read_task = await _run_read_loop(protocol)
-    release = _block_writes(transport)
-    cancelled = asyncio.create_task(protocol.reauthenticate())
-    await asyncio.sleep(0)
-    cancelled.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await cancelled
-    release.set()
-
-    reauth_task = asyncio.create_task(protocol.reauthenticate())
-    await _answer_after(transport, sent=1, packet=_auth_packet(0x00))
-    await reauth_task
-
-    assert len(transport.sent) == 1
-    sent = _decode(transport.sent[0])
-    assert isinstance(sent, Auth)
-    assert sent.reason_code == 0x19
+    with pytest.raises(MQTTDisconnectedError):
+        await protocol.reauthenticate()
 
     await _stop_task(read_task)
 
@@ -363,6 +346,7 @@ async def test_reauthenticate_timeout_covers_stalled_send() -> None:
         await asyncio.wait_for(protocol.reauthenticate(timeout=0.05), timeout=1)
 
     assert protocol._state.pending_auth is None
+    assert not transport.is_connected
 
     await _stop_task(read_task)
 
