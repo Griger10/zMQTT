@@ -34,6 +34,8 @@ class FakeAuthHandler:
         self._responses: deque[bytes | None] = deque(responses if responses is not None else [None])
         self.initial_calls = 0
         self.continue_calls: list[bytes | None] = []
+        self.finalize_calls: list[bytes | None] = []
+        self.finalize_error: Exception | None = None
 
     async def initial_data(self) -> bytes | None:
         self.initial_calls += 1
@@ -43,9 +45,14 @@ class FakeAuthHandler:
         self.continue_calls.append(data)
         return self._responses.popleft()
 
+    async def finalize_data(self, data: bytes | None) -> None:
+        self.finalize_calls.append(data)
+        if self.finalize_error is not None:
+            raise self.finalize_error
 
-def _connack(method: str | None = "TEST") -> bytes:
-    props = ConnAckProperties(authentication_method=method) if method is not None else None
+
+def _connack(method: str | None = "TEST", data: bytes | None = None) -> bytes:
+    props = ConnAckProperties(authentication_method=method, authentication_data=data) if method is not None else None
     return encode(ConnAck(session_present=False, return_code=0, properties=props), version="5.0")
 
 
@@ -165,6 +172,7 @@ async def test_connect_success_with_wrong_auth_method_raises(method: str | None)
         await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
 
     assert protocol._state.auth_method is None
+    assert handler.finalize_calls == []
 
 
 @pytest.mark.parametrize("method", [None, "WRONG"])
@@ -187,6 +195,7 @@ async def test_reauthenticate_response_with_wrong_auth_method_fails_exchange(
 ) -> None:
     handler = FakeAuthHandler(method="TEST", responses=[b"resp1"])
     protocol, transport = await _connected(handler)
+    handler.finalize_calls.clear()
     run_task = asyncio.create_task(protocol.run())
     await protocol.started_event.wait()
     reauth_task = asyncio.create_task(protocol.reauthenticate())
@@ -198,6 +207,94 @@ async def test_reauthenticate_response_with_wrong_auth_method_fails_exchange(
     with pytest.raises(MQTTDisconnectedError):
         await reauth_task
     assert handler.continue_calls == []
+    assert handler.finalize_calls == []
+
+
+async def test_connect_success_passes_final_data_to_finalize() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_connack(data=b"server-final"))
+
+    await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert handler.finalize_calls == [b"server-final"]
+
+
+async def test_connect_success_without_data_finalizes_with_none() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_connack())
+
+    await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert handler.finalize_calls == [None]
+
+
+async def test_connect_finalize_runs_after_challenge_rounds() -> None:
+    order: list[str] = []
+
+    class OrderHandler(FakeAuthHandler):
+        async def continue_data(self, data: bytes | None) -> bytes | None:
+            order.append("continue")
+            return await super().continue_data(data)
+
+        async def finalize_data(self, data: bytes | None) -> None:
+            order.append("finalize")
+            await super().finalize_data(data)
+
+    handler = OrderHandler(responses=[b"resp1"])
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_auth(0x18, b"c1"))
+    transport.feed(_connack(data=b"final"))
+
+    await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert order == ["continue", "finalize"]
+    assert handler.finalize_calls == [b"final"]
+
+
+async def test_connect_finalize_error_rejects_connection() -> None:
+    handler = FakeAuthHandler()
+    handler.finalize_error = ValueError("bad server signature")
+    protocol, transport = make_protocol(version="5.0", auth_handler=handler)
+    transport.feed(_connack(data=b"forged"))
+
+    with pytest.raises(ValueError, match="bad server signature"):
+        await protocol.connect(Connect(client_id="c", clean_session=True, keepalive=60))
+
+    assert protocol._state.auth_method is None
+
+
+async def test_reauthenticate_passes_final_data_to_finalize() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    handler.finalize_calls.clear()
+    read_task = await _run_read_loop(protocol)
+
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x00, b"server-final"))
+    await reauth_task
+
+    assert handler.finalize_calls == [b"server-final"]
+
+    await _stop_task(read_task)
+
+
+async def test_reauthenticate_finalize_error_is_raised_to_caller() -> None:
+    handler = FakeAuthHandler()
+    protocol, transport = await _connected(handler)
+    handler.finalize_error = ValueError("bad server signature")
+    run_task = asyncio.create_task(protocol.run())
+    await protocol.started_event.wait()
+
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x00, b"forged"))
+
+    with pytest.raises(ValueError, match="bad server signature"):
+        await run_task
+    with pytest.raises(ValueError, match="bad server signature"):
+        await reauth_task
+    assert protocol._state.pending_auth is None
 
 
 async def test_reauthenticate_direct_success() -> None:
@@ -592,3 +689,19 @@ async def test_client_connect_initial_data_is_bounded_by_connect_timeout() -> No
 
     assert transport.closed
     assert transport.sent == []
+
+
+async def test_client_connect_closes_transport_when_finalize_data_raises() -> None:
+    handler = FakeAuthHandler()
+    handler.finalize_error = ValueError("bad server signature")
+    transport = _ClientFakeTransport(feed=_connack(data=b"forged"))
+
+    async def factory(host: str, port: int, tls: object) -> Transport:  # noqa: ARG001
+        return transport
+
+    client = MQTTClient("localhost", version="5.0", auth_handler=handler, transport_factory=factory)
+
+    with pytest.raises(ValueError, match="bad server signature"):
+        await client._connect()
+
+    assert transport.closed
