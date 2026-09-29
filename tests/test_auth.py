@@ -400,6 +400,27 @@ async def test_auth_unexpected_reason_code_during_reauth_fails_pending() -> None
         await reauth_task
 
 
+async def test_continue_data_error_during_reauth_stops_connection() -> None:
+    class RaisingHandler(FakeAuthHandler):
+        async def continue_data(self, data: bytes | None) -> bytes | None:  # noqa: ARG002
+            msg = "cannot build response"
+            raise ValueError(msg)
+
+    handler = RaisingHandler()
+    protocol, transport = await _connected(handler)
+    run_task = asyncio.create_task(protocol.run())
+    await protocol.started_event.wait()
+
+    reauth_task = asyncio.create_task(protocol.reauthenticate())
+    await _answer_after(transport, sent=1, packet=_auth_packet(0x18, b"challenge"))
+
+    with pytest.raises(ValueError, match="cannot build response"):
+        await run_task
+
+    with pytest.raises(MQTTDisconnectedError):
+        await reauth_task
+
+
 async def test_disconnect_during_reauthenticate_raises_auth_error() -> None:
     handler = FakeAuthHandler()
     protocol, transport = await _connected(handler)
