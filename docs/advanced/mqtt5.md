@@ -215,6 +215,12 @@ After connecting, `await client.reauthenticate()` starts re-authentication
 (AUTH with reason code `0x19`) and returns once the broker confirms it.
 `auth_handler` requires `version="5.0"`.
 
+If `reauthenticate()` is cancelled or times out, zmqtt closes the connection:
+the broker is not told the exchange was abandoned, and a late reply could be
+mistaken for the answer to the next exchange. With a `ReconnectConfig` the
+client reconnects (and runs the handler's `initial_data()` again); otherwise it
+stays disconnected.
+
 Handler lifecycle:
 
 - `initial_data()` is called for every CONNECT, including reconnects, and must
