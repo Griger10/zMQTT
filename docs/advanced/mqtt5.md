@@ -215,6 +215,18 @@ After connecting, `await client.reauthenticate()` starts re-authentication
 (AUTH with reason code `0x19`) and returns once the broker confirms it.
 `auth_handler` requires `version="5.0"`.
 
+Handler lifecycle:
+
+- `initial_data()` is called for every CONNECT, including reconnects, and must
+  finish within `mqtt_connect_timeout`. It is **not** called by
+  `reauthenticate()`; pass the first re-authentication data as
+  `reauthenticate(data=...)`.
+- `continue_data()` is called for each AUTH challenge from the broker, both
+  during CONNECT and during re-authentication. It runs in the connection's read
+  loop, so a slow handler delays all incoming packets.
+- `method` must not change while the client is in use.
+- An exception raised by a handler method drops the connection.
+
 The broker's CONNACK and AUTH packets must carry the same authentication method
 as the one sent in CONNECT. If the method differs or is missing, zmqtt treats it
 as a protocol error (`MQTTProtocolError`) and drops the connection.
