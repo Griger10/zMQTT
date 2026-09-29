@@ -872,6 +872,12 @@ class MQTTClient:
             timeout: Seconds to wait for the exchange to complete before
                 raising MQTTTimeoutError. ``None`` waits indefinitely.
 
+        Note:
+            If the call is cancelled or times out, the connection is closed,
+            because the broker cannot be told the exchange was abandoned.
+            With a ``ReconnectConfig`` the client reconnects; otherwise it
+            stays disconnected.
+
         Raises:
             RuntimeError: If the client is not using MQTT 5.0, or the
                 connection did not negotiate an authentication method at

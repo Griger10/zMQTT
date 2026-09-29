@@ -620,10 +620,14 @@ class MQTTProtocol:
         Reuses the authentication method negotiated during CONNECT. Raises if
         the connection never completed an enhanced-auth exchange at CONNECT
         time, since MQTT 5.0 §4.12 requires re-auth to use same method.
+
+        If the call is cancelled or times out, the connection is closed: the
+        broker cannot be told the exchange was abandoned.
         """
         if self._version != "5.0":
             msg = f"Feature is not supported for mqtt protocol version {self._version}"
             raise RuntimeError(msg)
+        self._ensure_alive()
         if self._auth_handler is None or self._state.auth_method is None:
             msg = "reauthenticate() requires a negotiated authentication method from CONNECT"
             raise RuntimeError(msg)
@@ -651,10 +655,24 @@ class MQTTProtocol:
         try:
             await wait_for(exchange(), timeout=timeout)
         except asyncio.TimeoutError as e:
+            await self._abort_abandoned_reauth()
             msg = "Re-authentication was not completed within timeout"
             raise MQTTTimeoutError(msg) from e
+        except asyncio.CancelledError:
+            await self._abort_abandoned_reauth()
+            raise
         finally:
             self._state.pending_auth = None
+
+    async def _abort_abandoned_reauth(self) -> None:
+        """Drop the connection after a local cancel/timeout of a re-authentication.
+
+        The broker does not know the exchange was abandoned, so a late reply
+        could complete the next exchange (and a half-written AUTH may be on the
+        wire). No DISCONNECT is sent: it would queue behind the same stalled write.
+        """
+        self._dead = True
+        await asyncio.shield(self.abort())
 
     async def _read_loop(self) -> None:
         async with self._rejecting_oversized_packets():
