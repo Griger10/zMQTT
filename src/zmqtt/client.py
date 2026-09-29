@@ -884,6 +884,8 @@ class MQTTClient:
                 CONNECT time (no ``auth_handler`` was configured).
             MQTTDisconnectedError: If the client is not currently connected.
             MQTTAuthError: If the broker rejects the re-authentication.
+            Exception: Whatever ``auth_handler.finalize_data()`` raises when it
+                rejects the broker's final data; the connection is dropped.
             MQTTTimeoutError: If the exchange does not complete within timeout.
         """
         if self._version != "5.0":
