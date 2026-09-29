@@ -208,6 +208,10 @@ class ScramHandler:
     async def continue_data(self, data: bytes | None) -> bytes | None:
         return b"client-final-message"
 
+    async def finalize_data(self, data: bytes | None) -> None:
+        if data != b"expected-server-signature":
+            raise ValueError("server signature mismatch")
+
 client = create_client("localhost", version="5.0", auth_handler=ScramHandler())
 ```
 
@@ -230,6 +234,11 @@ Handler lifecycle:
 - `continue_data()` is called for each AUTH challenge from the broker, both
   during CONNECT and during re-authentication. It runs in the connection's read
   loop, so a slow handler delays all incoming packets.
+- `finalize_data()` is called when the broker reports success: on the CONNACK
+  during CONNECT and on the final AUTH (`0x00`) of a re-authentication, with the
+  broker's final Authentication Data (or `None`). Verify the server's proof here
+  (for SCRAM) and raise to reject it. Authentication is not considered
+  successful until it returns; `reauthenticate()` re-raises the exception.
 - `method` must not change while the client is in use.
 - An exception raised by a handler method drops the connection.
 
