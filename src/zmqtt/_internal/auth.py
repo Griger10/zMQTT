@@ -11,6 +11,9 @@ class AuthHandler(Protocol):
     ``continue_data()`` is called for every AUTH challenge from the broker,
     both during CONNECT and during re-authentication.
 
+    ``finalize_data()`` is called when the broker reports success, on CONNACK
+    and at the end of a re-authentication, with the broker's final data.
+
     Any exception raised by a handler method aborts the connection.
 
     Attributes:
@@ -35,5 +38,22 @@ class AuthHandler(Protocol):
 
         Args:
             data: Authentication Data of the broker's AUTH packet, if any.
+        """
+        ...
+
+    async def finalize_data(self, data: bytes | None) -> None:
+        """Verify the final Authentication Data sent by the broker on success.
+
+        Called when the broker reports successful authentication: on CONNACK
+        (success) during CONNECT and on AUTH with reason code 0x00 during
+        re-authentication. For mechanisms like SCRAM this is where the server's
+        final proof must be checked. Raise any exception to reject it: the
+        connection is dropped, and ``reauthenticate()`` re-raises the exception.
+
+        During CONNECT this is bounded by ``mqtt_connect_timeout``; during
+        re-authentication it runs in the read loop like ``continue_data()``.
+
+        Args:
+            data: Authentication Data of the broker's final packet, if any.
         """
         ...

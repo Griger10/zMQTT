@@ -243,7 +243,7 @@ class MQTTProtocol:
                             msg = f"Unexpected AUTH packet during CONNECT: {pkt!r}"
                             raise MQTTProtocolError(msg)
                         self._require_auth_method(pkt.properties)
-                        challenge_data = pkt.properties.authentication_data if pkt.properties is not None else None
+                        challenge_data = self._auth_data(pkt.properties)
                         response_data = await self._auth_handler.continue_data(challenge_data)
                         response = Auth(
                             reason_code=0x18,
@@ -262,6 +262,7 @@ class MQTTProtocol:
                         raise MQTTConnectError(pkt.return_code, properties=pkt.properties)
                     if self._auth_handler is not None:
                         self._require_auth_method(pkt.properties)
+                        await self._auth_handler.finalize_data(self._auth_data(pkt.properties))
                     log.info("Connected with session_present=%s", pkt.session_present)
                     if self._version == "5.0" and pkt.properties is not None:
                         # Properties present but Maximum QoS absent: spec default is QoS 2.
@@ -810,6 +811,10 @@ class MQTTProtocol:
             msg = f"Authentication Method mismatch: expected {expected!r}, got {received!r}"
             raise MQTTProtocolError(msg)
 
+    @staticmethod
+    def _auth_data(properties: AuthProperties | ConnAckProperties | None) -> bytes | None:
+        return properties.authentication_data if properties is not None else None
+
     async def _handle_auth(self, packet: Auth) -> None:
         if self._version != "5.0":
             msg = "Received AUTH packet in MQTT 3.1.1 session"
@@ -823,10 +828,10 @@ class MQTTProtocol:
             raise MQTTProtocolError(msg)
 
         self._require_auth_method(packet.properties)
-        challenge_data = packet.properties.authentication_data if packet.properties is not None else None
+        auth_data = self._auth_data(packet.properties)
 
         if packet.reason_code == 0x18:
-            response_data = await self._auth_handler.continue_data(challenge_data)
+            response_data = await self._auth_handler.continue_data(auth_data)
             response = Auth(
                 reason_code=0x18,
                 properties=AuthProperties(
@@ -838,6 +843,13 @@ class MQTTProtocol:
             return
 
         if packet.reason_code == 0x00:
+            try:
+                await self._auth_handler.finalize_data(auth_data)
+            except Exception as e:
+                # Surface the handler's error to reauthenticate(); the read loop
+                # then dies and the connection is dropped.
+                pending_auth.set_exception(e)
+                raise
             pending_auth.set_result(packet)
             return
 
