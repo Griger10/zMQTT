@@ -303,7 +303,7 @@ def test_pubxxx_roundtrip(
     assert result is not None
     decoded, consumed = result
     assert type(decoded) is type(packet)
-    assert decoded.packet_id == packet.packet_id  # type: ignore[union-attr]
+    assert decoded.packet_id == packet.packet_id
     assert consumed == 4
 
 
