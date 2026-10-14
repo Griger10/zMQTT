@@ -4,6 +4,8 @@ Thank you for contributing. See faststream-community [code of conduct](https://g
 
 ## Development
 
+The [Justfile](Justfile) provides shortcuts for development commands; run `just` to see them.
+
 Install the locked development environment:
 
 ```bash
